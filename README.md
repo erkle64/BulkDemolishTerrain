@@ -16,6 +16,6 @@ Extract everything inside the zip into your Foundry folder.
 
 #### Compatibility
 
-Unlikely to be compatible with other mods (except FastMiner and BulkDemolishTerrain).
+Unlikely to be compatible with other mods (except FastMiner and LazyCrafter).
 
 Probably only works in single player.
