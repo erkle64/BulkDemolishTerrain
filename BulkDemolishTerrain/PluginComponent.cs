@@ -18,10 +18,10 @@ namespace BulkDemolishTerrain
         {
             int toProcess = queuedEvents.Count;
             if (toProcess > 20) toProcess = 20;
-            //BepInExLoader.log.LogMessage(string.Format("Processing {0} events", toProcess));
+            if (toProcess > 0) BepInExLoader.log.LogMessage(string.Format("Processing {0} events", toProcess));
             for (int i = 0; i < toProcess; ++i) GameRoot.addLockstepEvent(queuedEvents.Dequeue());
         }
-
+        
         [HarmonyPostfix]
         public static void processBulkDemolishBuildingEvent(Character.BulkDemolishBuildingEvent __instance)
         {
