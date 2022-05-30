@@ -1,0 +1,6 @@
+
+BulkDemolishTerrain/.vs/*
+BulkDemolishTerrain/obj/*
+BulkDemolishTerrain/bin/*
+Libraries/*.dll
+.vs/*
