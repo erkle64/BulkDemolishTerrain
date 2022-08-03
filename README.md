@@ -1,6 +1,6 @@
 # BulkDemolishTerrain for [Foundry](https://www.foundry-game.com/)
 
-A mod to add a quick craft button.  It will craft the currently selected item in the hot bar.
+A mod to make bulk demolish remove terrain in the game Foundry.
 
 #### Installation
 
@@ -12,7 +12,7 @@ Extract everything inside the zip into your Foundry folder.
 
 #### Usage
 
-* Just use the bulk demolish mode (ctrl-Z) on terrain and make sure to have enough inventory space for it.
+* Just use the bulk demolish mode (ctrl-F) on terrain and make sure to have enough inventory space for it.
 
 #### Compatibility
 
