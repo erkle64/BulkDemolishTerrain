@@ -1,45 +1,16 @@
-﻿using BepInEx;
-using BepInEx.Configuration;
-using UnhollowerRuntimeLib;
-using HarmonyLib;
+﻿using HarmonyLib;
 using UnityEngine;
-using Object = UnityEngine.Object;
 using System.Collections.Generic;
-using System.Reflection;
-using Il2CppSystem;
 
 namespace BulkDemolishTerrain
 {
-    [BepInPlugin(GUID, MODNAME, VERSION)]
-    public class BepInExLoader : BepInEx.IL2CPP.BasePlugin
+    public class ModMain
     {
         public const string
             MODNAME = "BulkDemolishTerrain",
             AUTHOR = "erkle64",
             GUID = "com." + AUTHOR + "." + MODNAME,
-            VERSION = "1.0.3";
-
-        public static BepInEx.Logging.ManualLogSource log;
-
-        public BepInExLoader()
-        {
-            log = Log;
-        }
-
-        public override void Load()
-        {
-            log.LogMessage("Registering PluginComponent in Il2Cpp");
-
-            try
-            {
-                var harmony = new Harmony(GUID);
-                harmony.PatchAll(typeof(Patch));
-            }
-            catch
-            {
-                log.LogError("Harmony - FAILED to Apply Patch's!");
-            }
-        }
+            VERSION = "1.1.0";
 
         [HarmonyPatch]
         public class Patch
@@ -49,13 +20,42 @@ namespace BulkDemolishTerrain
             private static Queue<QueuedEventDelegate> queuedEvents = new Queue<QueuedEventDelegate>();
             private static List<bool> shouldRemove = null;
 
-            [HarmonyPatch(typeof(InputProxy), nameof(InputProxy.Update))]
+            [HarmonyPatch(typeof(TooltipFrame), "_generateItemContainer")]
+            [HarmonyPostfix]
+            public static void TooltipFrame__generateItemContainer(TooltipFrame __instance, ItemTemplate itemTemplate, int itemCount)
+            {
+                if (itemTemplate != null)
+                {
+                    if (!__instance.uiContainer_item_custom.activeSelf)
+                    {
+                        __instance.uiContainer_item_custom.SetActive(true);
+                        __instance.uiText_itemContent.setText("");
+                    }
+                    else
+                    {
+                        __instance.uiText_itemContent.setText(__instance.uiText_itemContent.tmp.text);
+                    }
+
+                    var text = __instance.uiText_itemContent.tmp.text;
+
+                    text += "\n" + string.Format("Stack: {0}", itemTemplate.stackSize);
+
+                    if (itemTemplate.buildableObjectTemplate != null)
+                    {
+                        text += "\n" + string.Format("Size: {0}x{1}x{2}", itemTemplate.buildableObjectTemplate.size.x, itemTemplate.buildableObjectTemplate.size.y, itemTemplate.buildableObjectTemplate.size.z);
+                    }
+
+                    __instance.uiText_itemContent.setText(text.TrimStart('\n'));
+                }
+            }
+
+            [HarmonyPatch(typeof(InputProxy), nameof(GameCamera.Update))]
             [HarmonyPrefix]
             public static void Update()
             {
                 int toProcess = queuedEvents.Count;
-                if (toProcess > 20) toProcess = 20;
-                if (toProcess > 0) BepInExLoader.log.LogMessage(string.Format("Processing {0} events", toProcess));
+                if (toProcess > 40) toProcess = 40;
+                //if (toProcess > 0) log.LogMessage(string.Format("Processing {0} events", toProcess));
                 for (int i = 0; i < toProcess; ++i) queuedEvents.Dequeue().Invoke();
             }
 
@@ -63,7 +63,7 @@ namespace BulkDemolishTerrain
             [HarmonyPostfix]
             public static void processBulkDemolishBuildingEvent(Character.BulkDemolishBuildingEvent __instance)
             {
-                //log.LogInfo("BulkDemolishTerrain processBulkDemolishBuildingEvent");
+                Debug.Log("BulkDemolishTerrain processBulkDemolishBuildingEvent");
 
                 var character = GameRoot.getClientCharacter();
                 Debug.Assert(character != null);
@@ -79,7 +79,7 @@ namespace BulkDemolishTerrain
 
                     foreach (var terrainType in terrainTypes)
                     {
-                        shouldRemove.Add(terrainType.Value._isDestructible());
+                        shouldRemove.Add(terrainType.Value.destructible);
                         //BepInExLoader.log.LogMessage(string.Format("Terrain {0} {1} {2} {3} {4}", terrainType.Value.name, terrainType.Value.identifier, terrainType.Value.id, terrainType.Value._isOre(), terrainType.Value._isDestructible()));
                     }
                 }
@@ -109,7 +109,7 @@ namespace BulkDemolishTerrain
                                         byte terrainType = 0;
                                         ChunkManager.getChunkIdxAndTerrainArrayIdxFromWorldCoords(coords.x, coords.y, coords.z, out chunkIndex, out blockIndex);
                                         ChunkManager.chunks_removeTerrainBlock(chunkIndex, blockIndex, ref terrainType);
-                                        ChunkManager.flagChunkVisualsAsDirty(ChunkManager.getChunkByIdx(chunkIndex), true, true, true);
+                                        ChunkManager.flagChunkVisualsAsDirty(chunkIndex, true, true);
                                     });
                                 }
                                 else
