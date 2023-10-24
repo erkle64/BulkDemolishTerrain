@@ -1,0 +1,9 @@
+{
+  "identifier": "erkle64.BulkDemolishTerrain",
+  "displayName": "BulkDemolishTerrain",
+  "assetBundles": [ ],
+  "assemblies": [
+    "BulkDemolishTerrain.dll"
+  ]
+}
+

@@ -1,6 +1,11 @@
+/Packages
+/BulkDemolishTerrain/obj
+/BulkDemolishTerrain/bin
+/Libraries
+.vs
+/MigrationBackup
+/Libraries
+/publicized_assemblies
+/Licenses
+/AssemblyPublicizer.exe
 
-BulkDemolishTerrain/.vs/*
-BulkDemolishTerrain/obj/*
-BulkDemolishTerrain/bin/*
-Libraries/*.dll
-.vs/*
