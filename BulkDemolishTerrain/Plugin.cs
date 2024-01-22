@@ -1,4 +1,4 @@
-using Channel3.ModKit;
+using C3.ModKit;
 using HarmonyLib;
 using Unfoundry;
 using System.Collections.Generic;
@@ -13,7 +13,7 @@ namespace BulkDemolishTerrain
             MODNAME = "BulkDemolishTerrain",
             AUTHOR = "erkle64",
             GUID = AUTHOR + "." + MODNAME,
-            VERSION = "1.2.0";
+            VERSION = "1.3.0";
 
         public static LogSource log;
 
@@ -32,35 +32,6 @@ namespace BulkDemolishTerrain
         {
             private static List<bool> shouldRemove = null;
             private static List<BuildableObjectGO> bogoQueryResult = new List<BuildableObjectGO>(0);
-
-            [HarmonyPatch(typeof(TooltipFrame), "_generateItemContainer")]
-            [HarmonyPostfix]
-            public static void TooltipFrame__generateItemContainer(TooltipFrame __instance, ItemTemplate itemTemplate, int itemCount)
-            {
-                if (itemTemplate != null)
-                {
-                    if (!__instance.uiContainer_item_custom.activeSelf)
-                    {
-                        __instance.uiContainer_item_custom.SetActive(true);
-                        __instance.uiText_itemContent.setText("");
-                    }
-                    else
-                    {
-                        __instance.uiText_itemContent.setText(__instance.uiText_itemContent.tmp.text);
-                    }
-
-                    var text = __instance.uiText_itemContent.tmp.text;
-
-                    text += "\n" + string.Format("Stack: {0}", itemTemplate.stackSize);
-
-                    if (itemTemplate.buildableObjectTemplate != null)
-                    {
-                        text += "\n" + string.Format("Size: {0}x{1}x{2}", itemTemplate.buildableObjectTemplate.size.x, itemTemplate.buildableObjectTemplate.size.y, itemTemplate.buildableObjectTemplate.size.z);
-                    }
-
-                    __instance.uiText_itemContent.setText(text.TrimStart('\n'));
-                }
-            }
 
             [HarmonyPatch(typeof(Character.BulkDemolishBuildingEvent), nameof(Character.BulkDemolishBuildingEvent.processEvent))]
             [HarmonyPostfix]

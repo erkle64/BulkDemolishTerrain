@@ -12,10 +12,7 @@
       <HintPath>$(FoundryAssembliesPath)0Harmony.dll</HintPath>
     </Reference>
     <Reference Include="Main">
-      <HintPath>$(SolutionDir)publicized_assemblies\Main.dll</HintPath>
-    </Reference>
-    <Reference Include="Unity.TextMeshPro">
-      <HintPath>G:\Games\Foundry\Foundry_Data\Managed\Unity.TextMeshPro.dll</HintPath>
+      <HintPath>$(FoundryAssembliesPath)Main.dll</HintPath>
     </Reference>
     <Reference Include="UnityEngine.CoreModule">
       <HintPath>$(FoundryAssembliesPath)UnityEngine.CoreModule.dll</HintPath>
@@ -24,13 +21,9 @@
       <HintPath>$(FoundryModsPath)A_Unfoundry\Unfoundry.dll</HintPath>
     </Reference>
     <Reference Include="UnityEngine.InputLegacyModule">
-      <HintPath>G:\Games\Foundry\Foundry_Data\Managed\UnityEngine.InputLegacyModule.dll</HintPath>
+      <HintPath>$(FoundryAssembliesPath)UnityEngine.InputLegacyModule.dll</HintPath>
     </Reference>
   </ItemGroup>
-
-  <Target Name="PreBuild" BeforeTargets="PreBuildEvent">
-    <Exec Command="$(SolutionDir)AssemblyPublicizer.exe --input=&quot;$(FoundryAssembliesPath)Main.dll&quot; --output=&quot;$(SolutionDir)publicized_assemblies\Main.dll&quot;" />
-  </Target>
 
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">
     <Exec Command="if not exist &quot;$(TargetModDir)&quot; mkdir &quot;$(TargetModDir)&quot;" />
