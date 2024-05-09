@@ -13,7 +13,7 @@ namespace BulkDemolishTerrain
             MODNAME = "BulkDemolishTerrain",
             AUTHOR = "erkle64",
             GUID = AUTHOR + "." + MODNAME,
-            VERSION = "1.3.0";
+            VERSION = "1.3.1";
 
         public static LogSource log;
 
@@ -37,11 +37,7 @@ namespace BulkDemolishTerrain
             [HarmonyPostfix]
             public static void processBulkDemolishBuildingEvent(Character.BulkDemolishBuildingEvent __instance)
             {
-                Debug.Log("BulkDemolishTerrain processBulkDemolishBuildingEvent");
-
-                var character = GameRoot.getClientCharacter();
-                Debug.Assert(character != null);
-                ulong characterHash = character.usernameHash;
+                ulong characterHash = __instance.characterHash;
 
                 if (shouldRemove == null)
                 {
@@ -54,7 +50,7 @@ namespace BulkDemolishTerrain
                     foreach (var terrainType in terrainTypes)
                     {
                         shouldRemove.Add(terrainType.Value.destructible);
-                        //BepInExLoader.log.LogMessage(string.Format("Terrain {0} {1} {2} {3} {4}", terrainType.Value.name, terrainType.Value.identifier, terrainType.Value.id, terrainType.Value._isOre(), terrainType.Value._isDestructible()));
+                        //log.LogFormat(string.Format("Terrain {0} {1} {2} {3} {4}", terrainType.Value.name, terrainType.Value.identifier, terrainType.Value.id, terrainType.Value._isOre(), terrainType.Value._isDestructible()));
                     }
                 }
 
