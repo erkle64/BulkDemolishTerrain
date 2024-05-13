@@ -3,6 +3,7 @@ using HarmonyLib;
 using Unfoundry;
 using System.Collections.Generic;
 using UnityEngine;
+using System.Reflection;
 
 namespace BulkDemolishTerrain
 {
@@ -13,13 +14,48 @@ namespace BulkDemolishTerrain
             MODNAME = "BulkDemolishTerrain",
             AUTHOR = "erkle64",
             GUID = AUTHOR + "." + MODNAME,
-            VERSION = "1.3.1";
+            VERSION = "1.3.2";
 
         public static LogSource log;
+
+        public static TypedConfigEntry<KeyCode> configChangeModeKey;
+
+        private static TerrainMode _currentTerrainMode = TerrainMode.Collect;
+
+        private enum TerrainMode
+        {
+            Collect,
+            Destroy,
+            Ignore
+        }
 
         public Plugin()
         {
             log = new LogSource(MODNAME);
+
+            new Config(GUID)
+                .Group("Input",
+                    "Key Codes: Backspace, Tab, Clear, Return, Pause, Escape, Space, Exclaim,",
+                    "DoubleQuote, Hash, Dollar, Percent, Ampersand, Quote, LeftParen, RightParen,",
+                    "Asterisk, Plus, Comma, Minus, Period, Slash,",
+                    "Alpha0, Alpha1, Alpha2, Alpha3, Alpha4, Alpha5, Alpha6, Alpha7, Alpha8, Alpha9,",
+                    "Colon, Semicolon, Less, Equals, Greater, Question, At,",
+                    "LeftBracket, Backslash, RightBracket, Caret, Underscore, BackQuote,",
+                    "A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P, Q, R, S, T, U, V, W, X, Y, Z,",
+                    "LeftCurlyBracket, Pipe, RightCurlyBracket, Tilde, Delete,",
+                    "Keypad0, Keypad1, Keypad2, Keypad3, Keypad4, Keypad5, Keypad6, Keypad7, Keypad8, Keypad9,",
+                    "KeypadPeriod, KeypadDivide, KeypadMultiply, KeypadMinus, KeypadPlus, KeypadEnter, KeypadEquals,",
+                    "UpArrow, DownArrow, RightArrow, LeftArrow, Insert, Home, End, PageUp, PageDown,",
+                    "F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12, F13, F14, F15,",
+                    "Numlock, CapsLock, ScrollLock,",
+                    "RightShift, LeftShift, RightControl, LeftControl, RightAlt, LeftAlt, RightApple, RightApple,",
+                    "LeftCommand, LeftCommand, LeftWindows, RightWindows, AltGr,",
+                    "Help, Print, SysReq, Break, Menu,",
+                    "Mouse0, Mouse1, Mouse2, Mouse3, Mouse4, Mouse5, Mouse6")
+                    .Entry(out configChangeModeKey, "changeModeKey", KeyCode.Backslash, "Keyboard shortcut for change terrain mode.")
+                .EndGroup()
+                .Load()
+                .Save();
         }
 
         public override void Load(Mod mod)
@@ -37,6 +73,8 @@ namespace BulkDemolishTerrain
             [HarmonyPostfix]
             public static void processBulkDemolishBuildingEvent(Character.BulkDemolishBuildingEvent __instance)
             {
+                if (_currentTerrainMode == TerrainMode.Ignore) return;
+
                 ulong characterHash = __instance.characterHash;
 
                 if (shouldRemove == null)
@@ -55,6 +93,7 @@ namespace BulkDemolishTerrain
                 }
 
                 var useDestroyMode = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
+                if (_currentTerrainMode == TerrainMode.Destroy) useDestroyMode = !useDestroyMode;
 
                 var pos = __instance.demolitionAreaAABB_pos;
                 var size = __instance.demolitionAreaAABB_size;
@@ -118,6 +157,49 @@ namespace BulkDemolishTerrain
                 }
 
                 return true;
+            }
+
+            private static readonly FieldInfo _HandheldTabletHH_currentlySetMode = typeof(HandheldTabletHH).GetField("currentlySetMode", BindingFlags.NonPublic | BindingFlags.Instance);
+            private static readonly FieldInfo _GameRoot_bulkDemolitionState = typeof(GameRoot).GetField("bulkDemolitionState", BindingFlags.NonPublic | BindingFlags.Instance);
+            [HarmonyPatch(typeof(HandheldTabletHH), nameof(HandheldTabletHH._updateBehavoir))]
+            [HarmonyPostfix]
+            private static void HandheldTabletHH_updateBehavoir(HandheldTabletHH __instance)
+            {
+                var gameRoot = GameRoot.getSingleton();
+                if (gameRoot == null) return;
+
+                var clientCharacter = GameRoot.getClientCharacter();
+                if (clientCharacter == null) return;
+
+                if (clientCharacter.clientData.isBulkDemolitionModeActive())
+                {
+                    if (Input.GetKeyDown(configChangeModeKey.Get()))
+                    {
+                        switch (_currentTerrainMode)
+                        {
+                            case TerrainMode.Collect: _currentTerrainMode = TerrainMode.Destroy; break;
+                            case TerrainMode.Destroy: _currentTerrainMode = TerrainMode.Ignore; break;
+                            case TerrainMode.Ignore: _currentTerrainMode = TerrainMode.Collect; break;
+                        }
+                    }
+
+                    var infoText = GameRoot.getSingleton().uiText_infoText.tmp.text;
+                    infoText += $"\nTerrain Mode: {_currentTerrainMode}.";
+                    if ((int)_GameRoot_bulkDemolitionState.GetValue(GameRoot.getSingleton()) == 2)
+                    {
+                        switch (_currentTerrainMode)
+                        {
+                            case TerrainMode.Collect:
+                                infoText += " Hold [ALT] to destroy.";
+                                break;
+
+                            case TerrainMode.Destroy:
+                                infoText += " Hold [ALT] to collect.";
+                                break;
+                        }
+                    }
+                    GameRoot.setInfoText(infoText);
+                }
             }
         }
     }

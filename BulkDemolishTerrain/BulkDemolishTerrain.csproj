@@ -17,6 +17,9 @@
     <Reference Include="UnityEngine.CoreModule">
       <HintPath>$(FoundryAssembliesPath)UnityEngine.CoreModule.dll</HintPath>
     </Reference>
+    <Reference Include="Unity.TextMeshPro">
+      <HintPath>$(FoundryAssembliesPath)Unity.TextMeshPro.dll</HintPath>
+    </Reference>
     <Reference Include="Unfoundry">
       <HintPath>$(FoundryModsPath)A_Unfoundry\Unfoundry.dll</HintPath>
     </Reference>
