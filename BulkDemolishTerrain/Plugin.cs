@@ -7,20 +7,23 @@ using System.Reflection;
 
 namespace BulkDemolishTerrain
 {
-    [UnfoundryMod(Plugin.GUID)]
+    [UnfoundryMod(GUID)]
     public class Plugin : UnfoundryPlugin
     {
         public const string
             MODNAME = "BulkDemolishTerrain",
             AUTHOR = "erkle64",
             GUID = AUTHOR + "." + MODNAME,
-            VERSION = "1.3.2";
+            VERSION = "1.3.3";
 
         public static LogSource log;
 
         public static TypedConfigEntry<KeyCode> configChangeModeKey;
 
         private static TerrainMode _currentTerrainMode = TerrainMode.Collect;
+
+        private static readonly Queue<Vector3Int> _queuedTerrainRemovals = new Queue<Vector3Int>();
+        private static float _lastTerrainRemovalUpdate = 0.0f;
 
         private enum TerrainMode
         {
@@ -67,23 +70,33 @@ namespace BulkDemolishTerrain
         public class Patch
         {
             private static List<bool> shouldRemove = null;
-            private static List<BuildableObjectGO> bogoQueryResult = new List<BuildableObjectGO>(0);
+            private static readonly List<BuildableObjectGO> bogoQueryResult = new List<BuildableObjectGO>(0);
 
             [HarmonyPatch(typeof(Character.BulkDemolishBuildingEvent), nameof(Character.BulkDemolishBuildingEvent.processEvent))]
             [HarmonyPostfix]
             public static void processBulkDemolishBuildingEvent(Character.BulkDemolishBuildingEvent __instance)
             {
-                if (_currentTerrainMode == TerrainMode.Ignore) return;
+                if (GlobalStateManager.isDedicatedServer) return;
+
+                var clientCharacter = GameRoot.getClientCharacter();
+                if (clientCharacter == null) return;
+
+                var clientCharacterHash = clientCharacter.usernameHash;
 
                 ulong characterHash = __instance.characterHash;
+                if (characterHash != clientCharacterHash) return;
+
+                if (_currentTerrainMode == TerrainMode.Ignore) return;
 
                 if (shouldRemove == null)
                 {
                     var terrainTypes = ItemTemplateManager.getAllTerrainTemplates();
 
-                    shouldRemove = new List<bool>();
-                    shouldRemove.Add(false); // Air
-                    shouldRemove.Add(false); // ???
+                    shouldRemove = new List<bool>
+                    {
+                        false, // Air
+                        false // ???
+                    };
 
                     foreach (var terrainType in terrainTypes)
                     {
@@ -95,33 +108,10 @@ namespace BulkDemolishTerrain
                 var useDestroyMode = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
                 if (_currentTerrainMode == TerrainMode.Destroy) useDestroyMode = !useDestroyMode;
 
+                if (GameRoot.IsMultiplayerEnabled) useDestroyMode = false;
+
                 var pos = __instance.demolitionAreaAABB_pos;
                 var size = __instance.demolitionAreaAABB_size;
-                for (int z = 0; z < size.z; ++z)
-                {
-                    for (int y = 0; y < size.y; ++y)
-                    {
-                        for (int x = 0; x < size.x; ++x)
-                        {
-                            var coords = pos + new Vector3Int(x, y, z);
-                            Chunk chunk;
-                            uint blockIdx;
-                            var terrainData = ChunkManager.getTerrainDataForWorldCoord(coords, out chunk, out blockIdx);
-                            if (terrainData < shouldRemove.Count && shouldRemove[terrainData])
-                            {
-                                if (useDestroyMode)
-                                {
-                                    ActionManager.AddQueuedEvent(() => { ActionManager.AddQueuedEvent(() => GameRoot.addLockstepEvent(new Character.RemoveTerrainEvent(characterHash, coords, ulong.MaxValue))); });
-                                }
-                                else
-                                {
-                                    ActionManager.AddQueuedEvent(() => GameRoot.addLockstepEvent(new Character.RemoveTerrainEvent(characterHash, coords, 0)));
-                                }
-                            }
-                        }
-                    }
-                }
-
                 AABB3D aabb = ObjectPoolManager.aabb3ds.getObject();
                 aabb.reinitialize(pos.x, pos.y, pos.z, size.x, size.y, size.z);
                 StreamingSystem.getBuildableObjectGOQuadtreeArray().queryAABB3D(aabb, bogoQueryResult, true);
@@ -143,6 +133,70 @@ namespace BulkDemolishTerrain
                     }
                 }
                 ObjectPoolManager.aabb3ds.returnObject(aabb); aabb = null;
+
+                ChunkManager.getChunkCoordsFromWorldCoords(pos.x, pos.z, out var fromChunkX, out var fromChunkZ);
+                ChunkManager.getChunkCoordsFromWorldCoords(pos.x + size.x - 1, pos.z + size.z - 1, out var toChunkX, out var toChunkZ);
+                for (var chunkZ = fromChunkZ; chunkZ <= toChunkZ; chunkZ++)
+                {
+                    for (var chunkX = fromChunkX; chunkX <= toChunkX; chunkX++)
+                    {
+                        var chunkFromX = chunkX * Chunk.CHUNKSIZE_XZ;
+                        var chunkFromZ = chunkZ * Chunk.CHUNKSIZE_XZ;
+                        var chunkToX = chunkFromX + Chunk.CHUNKSIZE_XZ - 1;
+                        var chunkToZ = chunkFromZ + Chunk.CHUNKSIZE_XZ - 1;
+                        var fromX = Mathf.Max(pos.x, chunkFromX);
+                        var fromZ = Mathf.Max(pos.z, chunkFromZ);
+                        var toX = Mathf.Min(pos.x + size.x - 1, chunkToX);
+                        var toZ = Mathf.Min(pos.z + size.z - 1, chunkToZ);
+
+                        for (int z = fromZ; z <= toZ; ++z)
+                        {
+                            for (int y = 0; y < size.y; ++y)
+                            {
+                                for (int x = fromX; x <= toX; ++x)
+                                {
+                                    var coords = new Vector3Int(x, pos.y + y, z);
+                                    var terrainData = ChunkManager.getTerrainDataForWorldCoord(coords, out Chunk _, out uint _);
+                                    if (terrainData < shouldRemove.Count && shouldRemove[terrainData])
+                                    {
+                                        if (useDestroyMode)
+                                        {
+                                            ActionManager.AddQueuedEvent(() => _queuedTerrainRemovals.Enqueue(coords));
+                                        }
+                                        else
+                                        {
+                                            ActionManager.AddQueuedEvent(() => GameRoot.addLockstepEvent(new Character.RemoveTerrainEvent(characterHash, coords, 0)));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            private static readonly FieldInfo _gameInitDone = typeof(GameRoot).GetField("_gameInitDone", BindingFlags.Instance | BindingFlags.NonPublic);
+            private static readonly FieldInfo exitToMainMenuCalled = typeof(GameRoot).GetField("exitToMainMenuCalled", BindingFlags.Instance | BindingFlags.NonPublic);
+            [HarmonyPatch(typeof(GameRoot), "updateInternal")]
+            [HarmonyPrefix]
+            private static void GameRoot_updateInternal(GameRoot __instance)
+            {
+                if (!(bool)_gameInitDone.GetValue(__instance) || (bool)exitToMainMenuCalled.GetValue(__instance)) return;
+                if (!_queuedTerrainRemovals.TryPeek(out var _)) return;
+                if (Time.time < _lastTerrainRemovalUpdate + 0.1f) return;
+                _lastTerrainRemovalUpdate = Time.time;
+
+                var clientCharacter = GameRoot.getClientCharacter();
+                if (clientCharacter == null) return;
+
+                var characterHash = clientCharacter.usernameHash;
+
+                while (_queuedTerrainRemovals.TryPeek(out var coords))
+                {
+                    _queuedTerrainRemovals.Dequeue();
+
+                    GameRoot.addLockstepEvent(new Character.RemoveTerrainEvent(characterHash, coords, ulong.MaxValue - 1UL));
+                }
             }
 
             [HarmonyPatch(typeof(Character.DemolishBuildingEvent), nameof(Character.DemolishBuildingEvent.processEvent))]
@@ -159,11 +213,30 @@ namespace BulkDemolishTerrain
                 return true;
             }
 
+            [HarmonyPatch(typeof(Character.RemoveTerrainEvent), nameof(Character.RemoveTerrainEvent.processEvent))]
+            [HarmonyPrefix]
+            private static bool RemoveTerrainEvent_processEvent(Character.RemoveTerrainEvent __instance)
+            {
+                if (__instance.terrainRemovalPlaceholderId == ulong.MaxValue - 1UL)
+                {
+                    __instance.terrainRemovalPlaceholderId = 0ul;
+
+                    ChunkManager.getChunkIdxAndTerrainArrayIdxFromWorldCoords(__instance.worldPos.x, __instance.worldPos.y, __instance.worldPos.z, out ulong chunkIndex, out uint blockIndex);
+
+                    byte terrainType = 0;
+                    ChunkManager.chunks_removeTerrainBlock(chunkIndex, blockIndex, ref terrainType);
+
+                    return false;
+                }
+
+                return true;
+            }
+
             private static readonly FieldInfo _HandheldTabletHH_currentlySetMode = typeof(HandheldTabletHH).GetField("currentlySetMode", BindingFlags.NonPublic | BindingFlags.Instance);
             private static readonly FieldInfo _GameRoot_bulkDemolitionState = typeof(GameRoot).GetField("bulkDemolitionState", BindingFlags.NonPublic | BindingFlags.Instance);
             [HarmonyPatch(typeof(HandheldTabletHH), nameof(HandheldTabletHH._updateBehavoir))]
             [HarmonyPostfix]
-            private static void HandheldTabletHH_updateBehavoir(HandheldTabletHH __instance)
+            private static void HandheldTabletHH_updateBehavoir()
             {
                 var gameRoot = GameRoot.getSingleton();
                 if (gameRoot == null) return;
@@ -171,13 +244,13 @@ namespace BulkDemolishTerrain
                 var clientCharacter = GameRoot.getClientCharacter();
                 if (clientCharacter == null) return;
 
-                if (clientCharacter.clientData.isBulkDemolitionModeActive())
+                if (clientCharacter.clientData.isBulkDemolitionModeActive() && !GlobalStateManager.checkIfCursorIsRequired())
                 {
                     if (Input.GetKeyDown(configChangeModeKey.Get()))
                     {
                         switch (_currentTerrainMode)
                         {
-                            case TerrainMode.Collect: _currentTerrainMode = TerrainMode.Destroy; break;
+                            case TerrainMode.Collect: _currentTerrainMode = GameRoot.IsMultiplayerEnabled ? TerrainMode.Ignore : TerrainMode.Destroy; break;
                             case TerrainMode.Destroy: _currentTerrainMode = TerrainMode.Ignore; break;
                             case TerrainMode.Ignore: _currentTerrainMode = TerrainMode.Collect; break;
                         }
@@ -185,7 +258,7 @@ namespace BulkDemolishTerrain
 
                     var infoText = GameRoot.getSingleton().uiText_infoText.tmp.text;
                     infoText += $"\nTerrain Mode: {_currentTerrainMode}.";
-                    if ((int)_GameRoot_bulkDemolitionState.GetValue(GameRoot.getSingleton()) == 2)
+                    if (!GameRoot.IsMultiplayerEnabled && (int)_GameRoot_bulkDemolitionState.GetValue(GameRoot.getSingleton()) == 2)
                     {
                         switch (_currentTerrainMode)
                         {

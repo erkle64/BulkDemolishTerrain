@@ -26,6 +26,15 @@
     <Reference Include="UnityEngine.InputLegacyModule">
       <HintPath>$(FoundryAssembliesPath)UnityEngine.InputLegacyModule.dll</HintPath>
     </Reference>
+    <Reference Include="mscorlib">
+      <HintPath>$(FoundryAssembliesPath)mscorlib.dll</HintPath>
+    </Reference>
+    <Reference Include="System">
+      <HintPath>$(FoundryAssembliesPath)System.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Core">
+      <HintPath>$(FoundryAssembliesPath)System.Core.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
   <Target Name="PostBuild" AfterTargets="PostBuildEvent">
