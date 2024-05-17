@@ -12,8 +12,9 @@ Extract everything inside the zip into your Foundry folder.
 
 #### Usage
 
-* Just use the bulk demolish mode (ctrl-F) on terrain and make sure to have enough inventory space for it.
+* Just use the bulk demolish mode (defaults to shift+F) on terrain and make sure to have enough inventory space for it.
 * Hold alt to destroy items instead of adding them to the inventory.
+* Press \ to change mode.
 
 #### Compatibility
 
