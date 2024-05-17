@@ -4,6 +4,7 @@ using Unfoundry;
 using System.Collections.Generic;
 using UnityEngine;
 using System.Reflection;
+using System;
 
 namespace BulkDemolishTerrain
 {
@@ -14,7 +15,7 @@ namespace BulkDemolishTerrain
             MODNAME = "BulkDemolishTerrain",
             AUTHOR = "erkle64",
             GUID = AUTHOR + "." + MODNAME,
-            VERSION = "1.3.3";
+            VERSION = "1.3.4";
 
         public static LogSource log;
 
@@ -29,7 +30,9 @@ namespace BulkDemolishTerrain
         {
             Collect,
             Destroy,
-            Ignore
+            Ignore,
+            CollectTerrainOnly,
+            DestroyTerrainOnly
         }
 
         public Plugin()
@@ -72,6 +75,33 @@ namespace BulkDemolishTerrain
             private static List<bool> shouldRemove = null;
             private static readonly List<BuildableObjectGO> bogoQueryResult = new List<BuildableObjectGO>(0);
 
+            [HarmonyPatch(typeof(Character.BulkDemolishBuildingEvent), MethodType.Constructor, new Type[] { typeof(ulong), typeof(Vector3Int), typeof(Vector3Int) })]
+            [HarmonyPostfix]
+            public static void BulkDemolishBuildingEventConstructor(Character.BulkDemolishBuildingEvent __instance, Vector3Int demolitionAreaAABB_size)
+            {
+                if (_currentTerrainMode == TerrainMode.CollectTerrainOnly || _currentTerrainMode == TerrainMode.DestroyTerrainOnly)
+                {
+                    if (_currentTerrainMode == TerrainMode.CollectTerrainOnly || _currentTerrainMode == TerrainMode.DestroyTerrainOnly)
+                    {
+                        __instance.demolitionAreaAABB_size = -demolitionAreaAABB_size;
+                    }
+                }
+            }
+
+            [HarmonyPatch(typeof(Character.BulkDemolishBuildingEvent), nameof(Character.BulkDemolishBuildingEvent.processEvent))]
+            [HarmonyPrefix]
+            public static bool processBulkDemolishBuildingEventPrefix(Character.BulkDemolishBuildingEvent __instance)
+            {
+                if (__instance.demolitionAreaAABB_size.x < 0)
+                {
+                    __instance.demolitionAreaAABB_size = new Vector3Int(Mathf.Abs(__instance.demolitionAreaAABB_size.x), Mathf.Abs(__instance.demolitionAreaAABB_size.y), Mathf.Abs(__instance.demolitionAreaAABB_size.z));
+                    processBulkDemolishBuildingEvent(__instance);
+                    return false;
+                }
+
+                return true;
+            }
+
             [HarmonyPatch(typeof(Character.BulkDemolishBuildingEvent), nameof(Character.BulkDemolishBuildingEvent.processEvent))]
             [HarmonyPostfix]
             public static void processBulkDemolishBuildingEvent(Character.BulkDemolishBuildingEvent __instance)
@@ -106,7 +136,7 @@ namespace BulkDemolishTerrain
                 }
 
                 var useDestroyMode = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
-                if (_currentTerrainMode == TerrainMode.Destroy) useDestroyMode = !useDestroyMode;
+                if (_currentTerrainMode == TerrainMode.Destroy || _currentTerrainMode == TerrainMode.DestroyTerrainOnly) useDestroyMode = !useDestroyMode;
 
                 if (GameRoot.IsMultiplayerEnabled) useDestroyMode = false;
 
@@ -252,21 +282,40 @@ namespace BulkDemolishTerrain
                         {
                             case TerrainMode.Collect: _currentTerrainMode = GameRoot.IsMultiplayerEnabled ? TerrainMode.Ignore : TerrainMode.Destroy; break;
                             case TerrainMode.Destroy: _currentTerrainMode = TerrainMode.Ignore; break;
-                            case TerrainMode.Ignore: _currentTerrainMode = TerrainMode.Collect; break;
+                            case TerrainMode.Ignore: _currentTerrainMode = TerrainMode.CollectTerrainOnly; break;
+                            case TerrainMode.CollectTerrainOnly: _currentTerrainMode = GameRoot.IsMultiplayerEnabled ? TerrainMode.Collect : TerrainMode.DestroyTerrainOnly; break;
+                            case TerrainMode.DestroyTerrainOnly: _currentTerrainMode = TerrainMode.Collect; break;
                         }
                     }
 
                     var infoText = GameRoot.getSingleton().uiText_infoText.tmp.text;
-                    infoText += $"\nTerrain Mode: {_currentTerrainMode}.";
+                    switch (_currentTerrainMode)
+                    {
+                        case TerrainMode.Collect:
+                        case TerrainMode.Destroy:
+                        case TerrainMode.Ignore:
+                            infoText += $"\nTerrain Mode: {_currentTerrainMode}.";
+                            break;
+
+                        case TerrainMode.CollectTerrainOnly:
+                            infoText += $"\nTerrain Mode: Collect Terrain. Ignore Buildings.";
+                            break;
+
+                        case TerrainMode.DestroyTerrainOnly:
+                            infoText += $"\nTerrain Mode: Destroy Terrain. Ignore Buildings.";
+                            break;
+                    }
                     if (!GameRoot.IsMultiplayerEnabled && (int)_GameRoot_bulkDemolitionState.GetValue(GameRoot.getSingleton()) == 2)
                     {
                         switch (_currentTerrainMode)
                         {
                             case TerrainMode.Collect:
+                            case TerrainMode.CollectTerrainOnly:
                                 infoText += " Hold [ALT] to destroy.";
                                 break;
 
                             case TerrainMode.Destroy:
+                            case TerrainMode.DestroyTerrainOnly:
                                 infoText += " Hold [ALT] to collect.";
                                 break;
                         }
