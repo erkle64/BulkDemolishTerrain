@@ -15,16 +15,20 @@ namespace BulkDemolishTerrain
             MODNAME = "BulkDemolishTerrain",
             AUTHOR = "erkle64",
             GUID = AUTHOR + "." + MODNAME,
-            VERSION = "1.3.4";
+            VERSION = "1.3.5";
 
         public static LogSource log;
 
         public static TypedConfigEntry<KeyCode> configChangeModeKey;
+        public static TypedConfigEntry<bool> playerPlacedOnly;
 
         private static TerrainMode _currentTerrainMode = TerrainMode.Collect;
 
         private static readonly Queue<Vector3Int> _queuedTerrainRemovals = new Queue<Vector3Int>();
         private static float _lastTerrainRemovalUpdate = 0.0f;
+
+        private static List<bool> shouldRemove = null;
+        private static readonly List<BuildableObjectGO> bogoQueryResult = new List<BuildableObjectGO>(0);
 
         private enum TerrainMode
         {
@@ -40,6 +44,9 @@ namespace BulkDemolishTerrain
             log = new LogSource(MODNAME);
 
             new Config(GUID)
+                .Group("General")
+                    .Entry(out playerPlacedOnly, "playerPlacedOnly", false, OnPlayerPlacedOnlyChanged, "Only allow demolishing player placed terrain (Includes concrete).")
+                .EndGroup()
                 .Group("Input",
                     "Key Codes: Backspace, Tab, Clear, Return, Pause, Escape, Space, Exclaim,",
                     "DoubleQuote, Hash, Dollar, Percent, Ampersand, Quote, LeftParen, RightParen,",
@@ -64,6 +71,11 @@ namespace BulkDemolishTerrain
                 .Save();
         }
 
+        private void OnPlayerPlacedOnlyChanged(bool oldValue, bool newValue)
+        {
+            shouldRemove = null;
+        }
+
         public override void Load(Mod mod)
         {
             log.Log($"Loading {MODNAME}");
@@ -72,9 +84,6 @@ namespace BulkDemolishTerrain
         [HarmonyPatch]
         public class Patch
         {
-            private static List<bool> shouldRemove = null;
-            private static readonly List<BuildableObjectGO> bogoQueryResult = new List<BuildableObjectGO>(0);
-
             [HarmonyPatch(typeof(Character.BulkDemolishBuildingEvent), MethodType.Constructor, new Type[] { typeof(ulong), typeof(Vector3Int), typeof(Vector3Int) })]
             [HarmonyPostfix]
             public static void BulkDemolishBuildingEventConstructor(Character.BulkDemolishBuildingEvent __instance, Vector3Int demolitionAreaAABB_size)
@@ -128,10 +137,19 @@ namespace BulkDemolishTerrain
                         false // ???
                     };
 
-                    foreach (var terrainType in terrainTypes)
+                    if (playerPlacedOnly.Get())
                     {
-                        shouldRemove.Add(terrainType.Value.destructible);
-                        //log.LogFormat(string.Format("Terrain {0} {1} {2} {3} {4}", terrainType.Value.name, terrainType.Value.identifier, terrainType.Value.id, terrainType.Value._isOre(), terrainType.Value._isDestructible()));
+                        foreach (var terrainType in terrainTypes)
+                        {
+                            shouldRemove.Add(terrainType.Value.yieldItemOnDig_template != null && terrainType.Value.yieldItemOnDig_template.buildableObjectTemplate != null && terrainType.Value.parentBOT != null);
+                        }
+                    }
+                    else
+                    {
+                        foreach (var terrainType in terrainTypes)
+                        {
+                            shouldRemove.Add(terrainType.Value.destructible);
+                        }
                     }
                 }
 
