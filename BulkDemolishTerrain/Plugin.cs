@@ -15,14 +15,14 @@ namespace BulkDemolishTerrain
             MODNAME = "BulkDemolishTerrain",
             AUTHOR = "erkle64",
             GUID = AUTHOR + "." + MODNAME,
-            VERSION = "1.3.5";
+            VERSION = "1.4.0";
 
         public static LogSource log;
 
         public static TypedConfigEntry<KeyCode> configChangeModeKey;
         public static TypedConfigEntry<bool> playerPlacedOnly;
-
-        private static TerrainMode _currentTerrainMode = TerrainMode.Collect;
+        public static TypedConfigEntry<bool> removeLiquids;
+        public static TypedConfigEntry<TerrainMode> currentTerrainMode;
 
         private static readonly Queue<Vector3Int> _queuedTerrainRemovals = new Queue<Vector3Int>();
         private static float _lastTerrainRemovalUpdate = 0.0f;
@@ -30,13 +30,14 @@ namespace BulkDemolishTerrain
         private static List<bool> shouldRemove = null;
         private static readonly List<BuildableObjectGO> bogoQueryResult = new List<BuildableObjectGO>(0);
 
-        private enum TerrainMode
+        public enum TerrainMode
         {
             Collect,
             Destroy,
             Ignore,
             CollectTerrainOnly,
-            DestroyTerrainOnly
+            DestroyTerrainOnly,
+            LiquidOnly
         }
 
         public Plugin()
@@ -46,6 +47,10 @@ namespace BulkDemolishTerrain
             new Config(GUID)
                 .Group("General")
                     .Entry(out playerPlacedOnly, "playerPlacedOnly", false, OnPlayerPlacedOnlyChanged, "Only allow demolishing player placed terrain (Includes concrete).")
+                    .Entry(out removeLiquids, "removeLiquids", true, "Remove all liquids, water, when demolishing.")
+                .EndGroup()
+                .Group("Modes")
+                    .Entry(out currentTerrainMode, "currentTerrainMode", TerrainMode.Collect, "Collect, Destroy, Ignore, CollectTerrainOnly, DestroyTerrainOnly, LiquidOnly")
                 .EndGroup()
                 .Group("Input",
                     "Key Codes: Backspace, Tab, Clear, Return, Pause, Escape, Space, Exclaim,",
@@ -69,6 +74,11 @@ namespace BulkDemolishTerrain
                 .EndGroup()
                 .Load()
                 .Save();
+
+            if (!removeLiquids.Get() && currentTerrainMode.Get() == TerrainMode.LiquidOnly)
+            {
+                currentTerrainMode.Set(TerrainMode.Collect);
+            }
         }
 
         private void OnPlayerPlacedOnlyChanged(bool oldValue, bool newValue)
@@ -88,12 +98,14 @@ namespace BulkDemolishTerrain
             [HarmonyPostfix]
             public static void BulkDemolishBuildingEventConstructor(Character.BulkDemolishBuildingEvent __instance, Vector3Int demolitionAreaAABB_size)
             {
-                if (_currentTerrainMode == TerrainMode.CollectTerrainOnly || _currentTerrainMode == TerrainMode.DestroyTerrainOnly)
+                var currentTerrainMode = Plugin.currentTerrainMode.Get();
+                switch (currentTerrainMode)
                 {
-                    if (_currentTerrainMode == TerrainMode.CollectTerrainOnly || _currentTerrainMode == TerrainMode.DestroyTerrainOnly)
-                    {
+                    case TerrainMode.CollectTerrainOnly:
+                    case TerrainMode.DestroyTerrainOnly:
+                    case TerrainMode.LiquidOnly:
                         __instance.demolitionAreaAABB_size = -demolitionAreaAABB_size;
-                    }
+                        break;
                 }
             }
 
@@ -125,101 +137,156 @@ namespace BulkDemolishTerrain
                 ulong characterHash = __instance.characterHash;
                 if (characterHash != clientCharacterHash) return;
 
-                if (_currentTerrainMode == TerrainMode.Ignore) return;
-
-                if (shouldRemove == null)
-                {
-                    var terrainTypes = ItemTemplateManager.getAllTerrainTemplates();
-
-                    shouldRemove = new List<bool>
-                    {
-                        false, // Air
-                        false // ???
-                    };
-
-                    if (playerPlacedOnly.Get())
-                    {
-                        foreach (var terrainType in terrainTypes)
-                        {
-                            shouldRemove.Add(terrainType.Value.yieldItemOnDig_template != null && terrainType.Value.yieldItemOnDig_template.buildableObjectTemplate != null && terrainType.Value.parentBOT != null);
-                        }
-                    }
-                    else
-                    {
-                        foreach (var terrainType in terrainTypes)
-                        {
-                            shouldRemove.Add(terrainType.Value.destructible);
-                        }
-                    }
-                }
-
-                var useDestroyMode = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
-                if (_currentTerrainMode == TerrainMode.Destroy || _currentTerrainMode == TerrainMode.DestroyTerrainOnly) useDestroyMode = !useDestroyMode;
-
-                if (GameRoot.IsMultiplayerEnabled) useDestroyMode = false;
-
+                var currentTerrainMode = Plugin.currentTerrainMode.Get();
                 var pos = __instance.demolitionAreaAABB_pos;
                 var size = __instance.demolitionAreaAABB_size;
-                AABB3D aabb = ObjectPoolManager.aabb3ds.getObject();
-                aabb.reinitialize(pos.x, pos.y, pos.z, size.x, size.y, size.z);
-                StreamingSystem.getBuildableObjectGOQuadtreeArray().queryAABB3D(aabb, bogoQueryResult, true);
-                if (bogoQueryResult.Count > 0)
+                if (currentTerrainMode != TerrainMode.Ignore && currentTerrainMode != TerrainMode.LiquidOnly)
                 {
-                    foreach (var bogo in bogoQueryResult)
+                    if (shouldRemove == null)
                     {
-                        if (bogo.template.type == BuildableObjectTemplate.BuildableObjectType.WorldDecorMineAble)
+                        var terrainTypes = ItemTemplateManager.getAllTerrainTemplates();
+
+                        shouldRemove = new List<bool>
                         {
-                            if (useDestroyMode)
+                            false, // Air
+                            false // ???
+                        };
+
+                        if (playerPlacedOnly.Get())
+                        {
+                            foreach (var terrainType in terrainTypes)
                             {
-                                ActionManager.AddQueuedEvent(() => GameRoot.addLockstepEvent(new Character.DemolishBuildingEvent(characterHash, bogo.relatedEntityId, -2, 0)));
+                                shouldRemove.Add(terrainType.Value.yieldItemOnDig_template != null && terrainType.Value.yieldItemOnDig_template.buildableObjectTemplate != null && terrainType.Value.parentBOT != null);
                             }
-                            else
+                        }
+                        else
+                        {
+                            foreach (var terrainType in terrainTypes)
                             {
-                                ActionManager.AddQueuedEvent(() => GameRoot.addLockstepEvent(new Character.RemoveWorldDecorEvent(characterHash, bogo.relatedEntityId, 0)));
+                                shouldRemove.Add(terrainType.Value.destructible);
                             }
                         }
                     }
-                }
-                ObjectPoolManager.aabb3ds.returnObject(aabb); aabb = null;
 
-                ChunkManager.getChunkCoordsFromWorldCoords(pos.x, pos.z, out var fromChunkX, out var fromChunkZ);
-                ChunkManager.getChunkCoordsFromWorldCoords(pos.x + size.x - 1, pos.z + size.z - 1, out var toChunkX, out var toChunkZ);
-                for (var chunkZ = fromChunkZ; chunkZ <= toChunkZ; chunkZ++)
-                {
-                    for (var chunkX = fromChunkX; chunkX <= toChunkX; chunkX++)
+                    var useDestroyMode = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
+                    if (currentTerrainMode == TerrainMode.Destroy || currentTerrainMode == TerrainMode.DestroyTerrainOnly) useDestroyMode = !useDestroyMode;
+
+                    if (GameRoot.IsMultiplayerEnabled) useDestroyMode = false;
+
+                    AABB3D aabb = ObjectPoolManager.aabb3ds.getObject();
+                    aabb.reinitialize(pos.x, pos.y, pos.z, size.x, size.y, size.z);
+                    StreamingSystem.getBuildableObjectGOQuadtreeArray().queryAABB3D(aabb, bogoQueryResult, true);
+                    if (bogoQueryResult.Count > 0)
                     {
-                        var chunkFromX = chunkX * Chunk.CHUNKSIZE_XZ;
-                        var chunkFromZ = chunkZ * Chunk.CHUNKSIZE_XZ;
-                        var chunkToX = chunkFromX + Chunk.CHUNKSIZE_XZ - 1;
-                        var chunkToZ = chunkFromZ + Chunk.CHUNKSIZE_XZ - 1;
-                        var fromX = Mathf.Max(pos.x, chunkFromX);
-                        var fromZ = Mathf.Max(pos.z, chunkFromZ);
-                        var toX = Mathf.Min(pos.x + size.x - 1, chunkToX);
-                        var toZ = Mathf.Min(pos.z + size.z - 1, chunkToZ);
-
-                        for (int z = fromZ; z <= toZ; ++z)
+                        foreach (var bogo in bogoQueryResult)
                         {
-                            for (int y = 0; y < size.y; ++y)
+                            if (bogo.template.type == BuildableObjectTemplate.BuildableObjectType.WorldDecorMineAble)
                             {
-                                for (int x = fromX; x <= toX; ++x)
+                                if (useDestroyMode)
                                 {
-                                    var coords = new Vector3Int(x, pos.y + y, z);
-                                    var terrainData = ChunkManager.getTerrainDataForWorldCoord(coords, out Chunk _, out uint _);
-                                    if (terrainData < shouldRemove.Count && shouldRemove[terrainData])
+                                    ActionManager.AddQueuedEvent(() => GameRoot.addLockstepEvent(new Character.DemolishBuildingEvent(characterHash, bogo.relatedEntityId, -2, 0)));
+                                }
+                                else
+                                {
+                                    ActionManager.AddQueuedEvent(() => GameRoot.addLockstepEvent(new Character.RemoveWorldDecorEvent(characterHash, bogo.relatedEntityId, 0)));
+                                }
+                            }
+                        }
+                    }
+                    ObjectPoolManager.aabb3ds.returnObject(aabb); aabb = null;
+
+                    ChunkManager.getChunkCoordsFromWorldCoords(pos.x, pos.z, out var fromChunkX, out var fromChunkZ);
+                    ChunkManager.getChunkCoordsFromWorldCoords(pos.x + size.x - 1, pos.z + size.z - 1, out var toChunkX, out var toChunkZ);
+                    for (var chunkZ = fromChunkZ; chunkZ <= toChunkZ; chunkZ++)
+                    {
+                        for (var chunkX = fromChunkX; chunkX <= toChunkX; chunkX++)
+                        {
+                            var chunkFromX = chunkX * Chunk.CHUNKSIZE_XZ;
+                            var chunkFromZ = chunkZ * Chunk.CHUNKSIZE_XZ;
+                            var chunkToX = chunkFromX + Chunk.CHUNKSIZE_XZ - 1;
+                            var chunkToZ = chunkFromZ + Chunk.CHUNKSIZE_XZ - 1;
+                            var fromX = Mathf.Max(pos.x, chunkFromX);
+                            var fromZ = Mathf.Max(pos.z, chunkFromZ);
+                            var toX = Mathf.Min(pos.x + size.x - 1, chunkToX);
+                            var toZ = Mathf.Min(pos.z + size.z - 1, chunkToZ);
+
+                            for (int z = fromZ; z <= toZ; ++z)
+                            {
+                                for (int y = 0; y < size.y; ++y)
+                                {
+                                    for (int x = fromX; x <= toX; ++x)
                                     {
-                                        if (useDestroyMode)
+                                        var coords = new Vector3Int(x, pos.y + y, z);
+                                        var terrainData = ChunkManager.getTerrainDataForWorldCoord(coords, out Chunk _, out uint _);
+                                        if (terrainData < shouldRemove.Count && shouldRemove[terrainData])
                                         {
-                                            ActionManager.AddQueuedEvent(() => _queuedTerrainRemovals.Enqueue(coords));
-                                        }
-                                        else
-                                        {
-                                            ActionManager.AddQueuedEvent(() => GameRoot.addLockstepEvent(new Character.RemoveTerrainEvent(characterHash, coords, 0)));
+                                            if (useDestroyMode)
+                                            {
+                                                ActionManager.AddQueuedEvent(() => _queuedTerrainRemovals.Enqueue(coords));
+                                            }
+                                            else
+                                            {
+                                                ActionManager.AddQueuedEvent(() => GameRoot.addLockstepEvent(new Character.RemoveTerrainEvent(characterHash, coords, 0)));
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
                     }
+                }
+
+                if (removeLiquids.Get())
+                {
+                    ActionManager.AddQueuedEvent(() =>
+                    {
+                        var liquidSystem = GameRoot.World.Systems.Get<LiquidSystem>();
+                        ChunkManager.getChunkCoordsFromWorldCoords(pos.x, pos.z, out var fromChunkX, out var fromChunkZ);
+                        ChunkManager.getChunkCoordsFromWorldCoords(pos.x + size.x - 1, pos.z + size.z - 1, out var toChunkX, out var toChunkZ);
+                        for (var chunkZ = fromChunkZ; chunkZ <= toChunkZ; chunkZ++)
+                        {
+                            for (var chunkX = fromChunkX; chunkX <= toChunkX; chunkX++)
+                            {
+                                var chunkFromX = chunkX * Chunk.CHUNKSIZE_XZ;
+                                var chunkFromZ = chunkZ * Chunk.CHUNKSIZE_XZ;
+                                var chunkToX = chunkFromX + Chunk.CHUNKSIZE_XZ - 1;
+                                var chunkToZ = chunkFromZ + Chunk.CHUNKSIZE_XZ - 1;
+                                var fromX = Mathf.Max(pos.x, chunkFromX);
+                                var fromZ = Mathf.Max(pos.z, chunkFromZ);
+                                var toX = Mathf.Min(pos.x + size.x - 1, chunkToX);
+                                var toZ = Mathf.Min(pos.z + size.z - 1, chunkToZ);
+
+                                var chunkIndex = ChunkManager.calculateChunkIdx(chunkX, chunkZ);
+                                byte[] liquidAmounts = null;
+                                if (liquidSystem.tryGetLiquidChunk(chunkIndex, out var liquidChunk))
+                                {
+                                    liquidChunk.getDecompressedArrays(out var _, out liquidAmounts);
+                                }
+
+                                for (int z = fromZ; z <= toZ; ++z)
+                                {
+                                    for (int y = 0; y < size.y; ++y)
+                                    {
+                                        for (int x = fromX; x <= toX; ++x)
+                                        {
+                                            var coords = new Vector3Int(x, pos.y + y, z);
+                                            if (liquidAmounts != null)
+                                            {
+                                                var tx = (uint)(coords.x - chunkX * Chunk.CHUNKSIZE_XZ);
+                                                var ty = (uint)coords.y;
+                                                var tz = (uint)(coords.z - chunkZ * Chunk.CHUNKSIZE_XZ);
+                                                var terrainIndex = Chunk.getTerrainArrayIdx(tx, ty, tz);
+                                                if (liquidAmounts[terrainIndex] > 0)
+                                                {
+                                                    GameRoot.addLockstepEvent(new SetLiquidCellEvent(coords.x, coords.y, coords.z, 0, 0));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
                 }
             }
 
@@ -296,49 +363,57 @@ namespace BulkDemolishTerrain
                 {
                     if (Input.GetKeyDown(configChangeModeKey.Get()))
                     {
-                        switch (_currentTerrainMode)
+                        switch (currentTerrainMode.Get())
                         {
-                            case TerrainMode.Collect: _currentTerrainMode = GameRoot.IsMultiplayerEnabled ? TerrainMode.Ignore : TerrainMode.Destroy; break;
-                            case TerrainMode.Destroy: _currentTerrainMode = TerrainMode.Ignore; break;
-                            case TerrainMode.Ignore: _currentTerrainMode = TerrainMode.CollectTerrainOnly; break;
-                            case TerrainMode.CollectTerrainOnly: _currentTerrainMode = GameRoot.IsMultiplayerEnabled ? TerrainMode.Collect : TerrainMode.DestroyTerrainOnly; break;
-                            case TerrainMode.DestroyTerrainOnly: _currentTerrainMode = TerrainMode.Collect; break;
+                            case TerrainMode.Collect: currentTerrainMode.Set(GameRoot.IsMultiplayerEnabled ? TerrainMode.Ignore : TerrainMode.Destroy); break;
+                            case TerrainMode.Destroy: currentTerrainMode.Set(TerrainMode.Ignore); break;
+                            case TerrainMode.Ignore: currentTerrainMode.Set(TerrainMode.CollectTerrainOnly); break;
+                            case TerrainMode.CollectTerrainOnly: currentTerrainMode.Set(GameRoot.IsMultiplayerEnabled ? TerrainMode.Collect : TerrainMode.DestroyTerrainOnly); break;
+                            case TerrainMode.DestroyTerrainOnly: currentTerrainMode.Set(removeLiquids.Get() ? TerrainMode.LiquidOnly : TerrainMode.Collect); break;
+                            case TerrainMode.LiquidOnly: currentTerrainMode.Set(TerrainMode.Collect); break;
                         }
                     }
 
                     var infoText = GameRoot.getSingleton().uiText_infoText.tmp.text;
-                    switch (_currentTerrainMode)
+                    if (!infoText.Contains("Terrain Mode:"))
                     {
-                        case TerrainMode.Collect:
-                        case TerrainMode.Destroy:
-                        case TerrainMode.Ignore:
-                            infoText += $"\nTerrain Mode: {_currentTerrainMode}.";
-                            break;
-
-                        case TerrainMode.CollectTerrainOnly:
-                            infoText += $"\nTerrain Mode: Collect Terrain. Ignore Buildings.";
-                            break;
-
-                        case TerrainMode.DestroyTerrainOnly:
-                            infoText += $"\nTerrain Mode: Destroy Terrain. Ignore Buildings.";
-                            break;
-                    }
-                    if (!GameRoot.IsMultiplayerEnabled && (int)_GameRoot_bulkDemolitionState.GetValue(GameRoot.getSingleton()) == 2)
-                    {
-                        switch (_currentTerrainMode)
+                        switch (currentTerrainMode.Get())
                         {
                             case TerrainMode.Collect:
-                            case TerrainMode.CollectTerrainOnly:
-                                infoText += " Hold [ALT] to destroy.";
+                            case TerrainMode.Destroy:
+                            case TerrainMode.Ignore:
+                                infoText += $"\nTerrain Mode: {currentTerrainMode.Get()}.";
                                 break;
 
-                            case TerrainMode.Destroy:
+                            case TerrainMode.CollectTerrainOnly:
+                                infoText += $"\nTerrain Mode: Collect Terrain. Ignore Buildings.";
+                                break;
+
                             case TerrainMode.DestroyTerrainOnly:
-                                infoText += " Hold [ALT] to collect.";
+                                infoText += $"\nTerrain Mode: Destroy Terrain. Ignore Buildings.";
+                                break;
+
+                            case TerrainMode.LiquidOnly:
+                                infoText += $"\nTerrain Mode: Liquid Only.";
                                 break;
                         }
+                        if (!GameRoot.IsMultiplayerEnabled && (int)_GameRoot_bulkDemolitionState.GetValue(GameRoot.getSingleton()) == 2)
+                        {
+                            switch (currentTerrainMode.Get())
+                            {
+                                case TerrainMode.Collect:
+                                case TerrainMode.CollectTerrainOnly:
+                                    infoText += " Hold [ALT] to destroy.";
+                                    break;
+
+                                case TerrainMode.Destroy:
+                                case TerrainMode.DestroyTerrainOnly:
+                                    infoText += " Hold [ALT] to collect.";
+                                    break;
+                            }
+                        }
+                        GameRoot.setInfoText(infoText);
                     }
-                    GameRoot.setInfoText(infoText);
                 }
             }
         }

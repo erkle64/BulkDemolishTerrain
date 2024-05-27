@@ -14,6 +14,9 @@
     <Reference Include="Main">
       <HintPath>$(FoundryAssembliesPath)Main.dll</HintPath>
     </Reference>
+    <Reference Include="Channel3">
+      <HintPath>$(FoundryAssembliesPath)Channel3.dll</HintPath>
+    </Reference>
     <Reference Include="UnityEngine.CoreModule">
       <HintPath>$(FoundryAssembliesPath)UnityEngine.CoreModule.dll</HintPath>
     </Reference>
