@@ -15,20 +15,24 @@ namespace BulkDemolishTerrain
             MODNAME = "BulkDemolishTerrain",
             AUTHOR = "erkle64",
             GUID = AUTHOR + "." + MODNAME,
-            VERSION = "1.4.0";
+            VERSION = "1.4.1";
 
         public static LogSource log;
 
         public static TypedConfigEntry<KeyCode> configChangeModeKey;
         public static TypedConfigEntry<bool> playerPlacedOnly;
         public static TypedConfigEntry<bool> removeLiquids;
+        public static TypedConfigEntry<bool> ignoreMiningLevel;
         public static TypedConfigEntry<TerrainMode> currentTerrainMode;
 
         private static readonly Queue<Vector3Int> _queuedTerrainRemovals = new Queue<Vector3Int>();
         private static float _lastTerrainRemovalUpdate = 0.0f;
 
         private static List<bool> shouldRemove = null;
+        private static List<bool> isOre = null;
         private static readonly List<BuildableObjectGO> bogoQueryResult = new List<BuildableObjectGO>(0);
+
+        private static bool _confirmationFrameOpen = false;
 
         public enum TerrainMode
         {
@@ -48,6 +52,7 @@ namespace BulkDemolishTerrain
                 .Group("General")
                     .Entry(out playerPlacedOnly, "playerPlacedOnly", false, OnPlayerPlacedOnlyChanged, "Only allow demolishing player placed terrain (Includes concrete).")
                     .Entry(out removeLiquids, "removeLiquids", true, "Remove all liquids, water, when demolishing.")
+                    .Entry(out ignoreMiningLevel, "ignoreMiningLevel", false, "Ignore mining level research and remove terrain anyway.")
                 .EndGroup()
                 .Group("Modes")
                     .Entry(out currentTerrainMode, "currentTerrainMode", TerrainMode.Collect, "Collect, Destroy, Ignore, CollectTerrainOnly, DestroyTerrainOnly, LiquidOnly")
@@ -91,6 +96,99 @@ namespace BulkDemolishTerrain
             log.Log($"Loading {MODNAME}");
         }
 
+        [FoundryRPC]
+        public static void DestroyTerrainRPC(int worldPosX, int worldPosY, int worldPosZ)
+        {
+            try
+            {
+                ChunkManager.getChunkIdxAndTerrainArrayIdxFromWorldCoords(worldPosX, worldPosY, worldPosZ, out ulong chunkIndex, out uint blockIndex);
+
+                byte terrainType = 0;
+                ChunkManager.chunks_removeTerrainBlock(chunkIndex, blockIndex, ref terrainType);
+            }
+            catch(Exception ex)
+            {
+                log.LogWarning(ex.ToString());
+            }
+        }
+
+    [FoundryRPC]
+        public static void DestroyBuildingRPC(ulong entityId)
+        {
+            try
+            {
+                if (BuildingManager.buildingManager_getEntityPtr(entityId) != 0UL)
+                {
+                    BuildingManager.buildingManager_demolishBuildingEntityForDynamite(entityId);
+                }
+            }
+            catch (Exception ex)
+            {
+                log.LogWarning(ex.ToString());
+            }
+        }
+
+        private static void GenerateShouldRemoveArray(bool force)
+        {
+            var miningLevel = ResearchSystem.getUnlockedMiningHardnessLevel();
+            if (force || shouldRemove == null)
+            {
+                var terrainTypes = ItemTemplateManager.getAllTerrainTemplates();
+
+                shouldRemove = new List<bool>
+                        {
+                            false, // Air
+                            false // ???
+                        };
+
+                if (playerPlacedOnly.Get())
+                {
+                    foreach (var terrainType in terrainTypes)
+                    {
+                        shouldRemove.Add(
+                            terrainType.Value.destructible
+                            && terrainType.Value.yieldItemOnDig_template != null
+                            && terrainType.Value.yieldItemOnDig_template.buildableObjectTemplate != null
+                            && terrainType.Value.parentBOT != null
+                            && (ignoreMiningLevel.Get() || terrainType.Value.requiredMiningHardnessLevel <= miningLevel));
+                    }
+                }
+                else
+                {
+                    foreach (var terrainType in terrainTypes)
+                    {
+                        shouldRemove.Add(
+                            terrainType.Value.destructible
+                            && (ignoreMiningLevel.Get() || terrainType.Value.requiredMiningHardnessLevel <= miningLevel));
+                    }
+                }
+            }
+        }
+
+        private static void GenerateIsOreArray()
+        {
+            var miningLevel = ResearchSystem.getUnlockedMiningHardnessLevel();
+            if (isOre == null)
+            {
+                var terrainTypes = ItemTemplateManager.getAllTerrainTemplates();
+
+                isOre = new List<bool>
+                        {
+                            false, // Air
+                            false // ???
+                        };
+
+                foreach (var terrainType in terrainTypes)
+                {
+                    isOre.Add(
+                        terrainType.Value.flags.HasFlagNonAlloc(TerrainBlockType.TerrainTypeFlags.Ore)
+                        || terrainType.Value.flags.HasFlagNonAlloc(TerrainBlockType.TerrainTypeFlags.OreVeinMineable)
+                        || terrainType.Value.flags.HasFlagNonAlloc(TerrainBlockType.TerrainTypeFlags.OreVeinCore)
+                        || terrainType.Value.flags.HasFlagNonAlloc(TerrainBlockType.TerrainTypeFlags.OreVeinExterior));
+                }
+            }
+        }
+
         [HarmonyPatch]
         public class Patch
         {
@@ -116,7 +214,7 @@ namespace BulkDemolishTerrain
                 if (__instance.demolitionAreaAABB_size.x < 0)
                 {
                     __instance.demolitionAreaAABB_size = new Vector3Int(Mathf.Abs(__instance.demolitionAreaAABB_size.x), Mathf.Abs(__instance.demolitionAreaAABB_size.y), Mathf.Abs(__instance.demolitionAreaAABB_size.z));
-                    processBulkDemolishBuildingEvent(__instance);
+                    //processBulkDemolishBuildingEvent(__instance);
                     return false;
                 }
 
@@ -128,6 +226,8 @@ namespace BulkDemolishTerrain
             public static void processBulkDemolishBuildingEvent(Character.BulkDemolishBuildingEvent __instance)
             {
                 if (GlobalStateManager.isDedicatedServer) return;
+
+                log.Log($"processBulkDemolishBuildingEvent: {__instance.demolitionAreaAABB_pos} {__instance.demolitionAreaAABB_size}");
 
                 var clientCharacter = GameRoot.getClientCharacter();
                 if (clientCharacter == null) return;
@@ -142,36 +242,13 @@ namespace BulkDemolishTerrain
                 var size = __instance.demolitionAreaAABB_size;
                 if (currentTerrainMode != TerrainMode.Ignore && currentTerrainMode != TerrainMode.LiquidOnly)
                 {
-                    if (shouldRemove == null)
-                    {
-                        var terrainTypes = ItemTemplateManager.getAllTerrainTemplates();
-
-                        shouldRemove = new List<bool>
-                        {
-                            false, // Air
-                            false // ???
-                        };
-
-                        if (playerPlacedOnly.Get())
-                        {
-                            foreach (var terrainType in terrainTypes)
-                            {
-                                shouldRemove.Add(terrainType.Value.yieldItemOnDig_template != null && terrainType.Value.yieldItemOnDig_template.buildableObjectTemplate != null && terrainType.Value.parentBOT != null);
-                            }
-                        }
-                        else
-                        {
-                            foreach (var terrainType in terrainTypes)
-                            {
-                                shouldRemove.Add(terrainType.Value.destructible);
-                            }
-                        }
-                    }
+                    GenerateShouldRemoveArray(false);
+                    GenerateIsOreArray();
 
                     var useDestroyMode = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
                     if (currentTerrainMode == TerrainMode.Destroy || currentTerrainMode == TerrainMode.DestroyTerrainOnly) useDestroyMode = !useDestroyMode;
 
-                    if (GameRoot.IsMultiplayerEnabled) useDestroyMode = false;
+                    //if (GameRoot.IsMultiplayerEnabled) useDestroyMode = false;
 
                     AABB3D aabb = ObjectPoolManager.aabb3ds.getObject();
                     aabb.reinitialize(pos.x, pos.y, pos.z, size.x, size.y, size.z);
@@ -184,7 +261,7 @@ namespace BulkDemolishTerrain
                             {
                                 if (useDestroyMode)
                                 {
-                                    ActionManager.AddQueuedEvent(() => GameRoot.addLockstepEvent(new Character.DemolishBuildingEvent(characterHash, bogo.relatedEntityId, -2, 0)));
+                                    ActionManager.AddQueuedEvent(() => Rpc.Lockstep.Run(DestroyBuildingRPC, bogo.relatedEntityId));
                                 }
                                 else
                                 {
@@ -197,6 +274,8 @@ namespace BulkDemolishTerrain
 
                     ChunkManager.getChunkCoordsFromWorldCoords(pos.x, pos.z, out var fromChunkX, out var fromChunkZ);
                     ChunkManager.getChunkCoordsFromWorldCoords(pos.x + size.x - 1, pos.z + size.z - 1, out var toChunkX, out var toChunkZ);
+                    var hasOre = false;
+                    var hasNonOre = false;
                     for (var chunkZ = fromChunkZ; chunkZ <= toChunkZ; chunkZ++)
                     {
                         for (var chunkX = fromChunkX; chunkX <= toChunkX; chunkX++)
@@ -229,10 +308,63 @@ namespace BulkDemolishTerrain
                                                 ActionManager.AddQueuedEvent(() => GameRoot.addLockstepEvent(new Character.RemoveTerrainEvent(characterHash, coords, 0)));
                                             }
                                         }
+                                        if (terrainData < isOre.Count && isOre[terrainData])
+                                        {
+                                            hasOre = true;
+                                        }
+                                        else if (terrainData > 1)
+                                        {
+                                            hasNonOre = true;
+                                        }
                                     }
                                 }
                             }
                         }
+                    }
+
+                    if (!_confirmationFrameOpen && useDestroyMode && !hasNonOre && hasOre)
+                    {
+                        _confirmationFrameOpen = true;
+                        GlobalStateManager.addCursorRequirement();
+                        ConfirmationFrame.Show("Destroy ore blocks?", () =>
+                        {
+                            GlobalStateManager.removeCursorRequirement();
+                            for (var chunkZ = fromChunkZ; chunkZ <= toChunkZ; chunkZ++)
+                            {
+                                for (var chunkX = fromChunkX; chunkX <= toChunkX; chunkX++)
+                                {
+                                    var chunkFromX = chunkX * Chunk.CHUNKSIZE_XZ;
+                                    var chunkFromZ = chunkZ * Chunk.CHUNKSIZE_XZ;
+                                    var chunkToX = chunkFromX + Chunk.CHUNKSIZE_XZ - 1;
+                                    var chunkToZ = chunkFromZ + Chunk.CHUNKSIZE_XZ - 1;
+                                    var fromX = Mathf.Max(pos.x, chunkFromX);
+                                    var fromZ = Mathf.Max(pos.z, chunkFromZ);
+                                    var toX = Mathf.Min(pos.x + size.x - 1, chunkToX);
+                                    var toZ = Mathf.Min(pos.z + size.z - 1, chunkToZ);
+
+                                    for (int z = fromZ; z <= toZ; ++z)
+                                    {
+                                        for (int y = 0; y < size.y; ++y)
+                                        {
+                                            for (int x = fromX; x <= toX; ++x)
+                                            {
+                                                var coords = new Vector3Int(x, pos.y + y, z);
+                                                var terrainData = ChunkManager.getTerrainDataForWorldCoord(coords, out Chunk _, out uint _);
+                                                if (terrainData < isOre.Count && isOre[terrainData])
+                                                {
+                                                    ActionManager.AddQueuedEvent(() => _queuedTerrainRemovals.Enqueue(coords));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _confirmationFrameOpen = false;
+                        }, () =>
+                        {
+                            GlobalStateManager.removeCursorRequirement();
+                            _confirmationFrameOpen = false;
+                        });
                     }
                 }
 
@@ -290,13 +422,17 @@ namespace BulkDemolishTerrain
                 }
             }
 
-            private static readonly FieldInfo _gameInitDone = typeof(GameRoot).GetField("_gameInitDone", BindingFlags.Instance | BindingFlags.NonPublic);
-            private static readonly FieldInfo exitToMainMenuCalled = typeof(GameRoot).GetField("exitToMainMenuCalled", BindingFlags.Instance | BindingFlags.NonPublic);
             [HarmonyPatch(typeof(GameRoot), "updateInternal")]
             [HarmonyPrefix]
             private static void GameRoot_updateInternal(GameRoot __instance)
             {
-                if (!(bool)_gameInitDone.GetValue(__instance) || (bool)exitToMainMenuCalled.GetValue(__instance)) return;
+                if (!GameRoot.IsGameInitDone) return;
+                if (GameRoot.ExitToMainMenuCalled)
+                {
+                    _queuedTerrainRemovals.Clear();
+                    return;
+                }
+
                 if (!_queuedTerrainRemovals.TryPeek(out var _)) return;
                 if (Time.time < _lastTerrainRemovalUpdate + 0.1f) return;
                 _lastTerrainRemovalUpdate = Time.time;
@@ -310,41 +446,15 @@ namespace BulkDemolishTerrain
                 {
                     _queuedTerrainRemovals.Dequeue();
 
-                    GameRoot.addLockstepEvent(new Character.RemoveTerrainEvent(characterHash, coords, ulong.MaxValue - 1UL));
+                    Rpc.Lockstep.Run(DestroyTerrainRPC, coords.x, coords.y, coords.z);
                 }
             }
 
-            [HarmonyPatch(typeof(Character.DemolishBuildingEvent), nameof(Character.DemolishBuildingEvent.processEvent))]
-            [HarmonyPrefix]
-            private static bool DemolishBuildingEvent_processEvent(Character.DemolishBuildingEvent __instance)
+            [HarmonyPatch(typeof(ResearchSystem), "onResearchFinished")]
+            [HarmonyPostfix]
+            static void ResearchSystem_onResearchFinished(ResearchTemplate rt)
             {
-                if (__instance.clientPlaceholderId == -2)
-                {
-                    __instance.clientPlaceholderId = 0;
-                    BuildingManager.buildingManager_demolishBuildingEntityForDynamite(__instance.entityId);
-                    return false;
-                }
-
-                return true;
-            }
-
-            [HarmonyPatch(typeof(Character.RemoveTerrainEvent), nameof(Character.RemoveTerrainEvent.processEvent))]
-            [HarmonyPrefix]
-            private static bool RemoveTerrainEvent_processEvent(Character.RemoveTerrainEvent __instance)
-            {
-                if (__instance.terrainRemovalPlaceholderId == ulong.MaxValue - 1UL)
-                {
-                    __instance.terrainRemovalPlaceholderId = 0ul;
-
-                    ChunkManager.getChunkIdxAndTerrainArrayIdxFromWorldCoords(__instance.worldPos.x, __instance.worldPos.y, __instance.worldPos.z, out ulong chunkIndex, out uint blockIndex);
-
-                    byte terrainType = 0;
-                    ChunkManager.chunks_removeTerrainBlock(chunkIndex, blockIndex, ref terrainType);
-
-                    return false;
-                }
-
-                return true;
+                if (shouldRemove != null) GenerateShouldRemoveArray(true);
             }
 
             private static readonly FieldInfo _HandheldTabletHH_currentlySetMode = typeof(HandheldTabletHH).GetField("currentlySetMode", BindingFlags.NonPublic | BindingFlags.Instance);
@@ -365,10 +475,10 @@ namespace BulkDemolishTerrain
                     {
                         switch (currentTerrainMode.Get())
                         {
-                            case TerrainMode.Collect: currentTerrainMode.Set(GameRoot.IsMultiplayerEnabled ? TerrainMode.Ignore : TerrainMode.Destroy); break;
+                            case TerrainMode.Collect: currentTerrainMode.Set(/*GameRoot.IsMultiplayerEnabled ? TerrainMode.Ignore : */TerrainMode.Destroy); break;
                             case TerrainMode.Destroy: currentTerrainMode.Set(TerrainMode.Ignore); break;
                             case TerrainMode.Ignore: currentTerrainMode.Set(TerrainMode.CollectTerrainOnly); break;
-                            case TerrainMode.CollectTerrainOnly: currentTerrainMode.Set(GameRoot.IsMultiplayerEnabled ? TerrainMode.Collect : TerrainMode.DestroyTerrainOnly); break;
+                            case TerrainMode.CollectTerrainOnly: currentTerrainMode.Set(/*GameRoot.IsMultiplayerEnabled ? TerrainMode.Collect : */TerrainMode.DestroyTerrainOnly); break;
                             case TerrainMode.DestroyTerrainOnly: currentTerrainMode.Set(removeLiquids.Get() ? TerrainMode.LiquidOnly : TerrainMode.Collect); break;
                             case TerrainMode.LiquidOnly: currentTerrainMode.Set(TerrainMode.Collect); break;
                         }
@@ -397,7 +507,7 @@ namespace BulkDemolishTerrain
                                 infoText += $"\nTerrain Mode: Liquid Only.";
                                 break;
                         }
-                        if (!GameRoot.IsMultiplayerEnabled && (int)_GameRoot_bulkDemolitionState.GetValue(GameRoot.getSingleton()) == 2)
+                        if (/*!GameRoot.IsMultiplayerEnabled && */(int)_GameRoot_bulkDemolitionState.GetValue(GameRoot.getSingleton()) == 2)
                         {
                             switch (currentTerrainMode.Get())
                             {
